@@ -1,0 +1,276 @@
+{
+ "name": "ytm-tui",
+ "version": 1,
+ "color": {
+  "themes": [
+   {
+    "id": "dark",
+    "name": "Dark"
+   },
+   {
+    "id": "light",
+    "name": "Light"
+   }
+  ],
+  "tokens": [
+   {
+    "name": "bg-base",
+    "value": {
+     "dark": "#14161b",
+     "light": "#f6f3ec"
+    },
+    "usage": "Pane background. Prefer the terminal's own background (Color::Reset) and paint this only when `theme.paint_background = true`. ANSI-256: 233 / 255 · 16-color: default bg."
+   },
+   {
+    "name": "bg-raised",
+    "value": {
+     "dark": "#1c1f26",
+     "light": "#ece7dc"
+    },
+    "usage": "Header bar, footer bar and popups (help, command palette). ANSI-256: 234 / 254 · 16-color: default bg."
+   },
+   {
+    "name": "bg-select",
+    "value": {
+     "dark": "#2a2f3a",
+     "light": "#e4ddcf"
+    },
+    "usage": "Background of the row under the cursor in any list. Every text token passes 4.5:1 on it. ANSI-256: 236 / 253 · 16-color: reverse video (SGR 7)."
+   },
+   {
+    "name": "border",
+    "value": {
+     "dark": "#3d4452",
+     "light": "#a8a090"
+    },
+    "usage": "Borders of unfocused panes (plain ┌─┐ set) and table rules. Decorative only — never the sole carrier of meaning. ANSI-256: 238 / 247 · 16-color: bright black (8)."
+   },
+   {
+    "name": "ink",
+    "value": {
+     "dark": "#e6e1d6",
+     "light": "#24211c"
+    },
+    "usage": "Primary text: track titles, list items, lyrics current line in 16-color mode. 13.9:1 / 14.5:1 on bg-base. ANSI-256: 253 / 234 · 16-color: default fg."
+   },
+   {
+    "name": "ink-muted",
+    "value": {
+     "dark": "#a39d90",
+     "light": "#5e584e"
+    },
+    "usage": "Secondary text: artist, album, durations, column headers, inactive lyrics lines, key hints. ≥4.9:1 on bg-select in both themes. ANSI-256: 247 / 240 · 16-color: SGR 2 (dim)."
+   },
+   {
+    "name": "ink-faint",
+    "value": {
+     "dark": "#6b675f",
+     "light": "#857d70"
+    },
+    "usage": "Disabled items, placeholder text in the search box, scrollbar track. Below 4.5:1 by design — never for information a user must read. ANSI-256: 241 / 244 · 16-color: bright black (8)."
+   },
+   {
+    "name": "ember",
+    "value": {
+     "dark": "#f4845f",
+     "light": "#a33c17"
+    },
+    "usage": "Identity accent. The now-playing marker ▶, progress fill, liked ♥, current lyrics line. ANSI-256: 209 / 130 · 16-color: bright red (9)."
+   },
+   {
+    "name": "lagoon",
+    "value": {
+     "dark": "#5fc4b8",
+     "light": "#12645e"
+    },
+    "usage": "Focus. Border + title of the focused pane (rounded ╭─╮ set), the list cursor ›, active sidebar item, search caret. ANSI-256: 79 / 23 · 16-color: cyan (6)."
+   },
+   {
+    "name": "amber",
+    "value": {
+     "dark": "#e8b75c",
+     "light": "#77520a"
+    },
+    "usage": "Attention without failure: buffering, rate-limit backoff countdown, 'cached' badge, toast warnings. ANSI-256: 179 / 94 · 16-color: yellow (3)."
+   },
+   {
+    "name": "moss",
+    "value": {
+     "dark": "#93c47d",
+     "light": "#375f20"
+    },
+    "usage": "Healthy state: network indicator online, download complete, auth valid. Paired with a glyph (●) so it never relies on hue. ANSI-256: 114 / 22 · 16-color: green (2)."
+   },
+   {
+    "name": "error",
+    "value": {
+     "dark": "#ff6b78",
+     "light": "#b3261e"
+    },
+    "usage": "Failures: stream expired and unrecoverable, auth rejected, offline. Always with ✗ and text. Lighter than ember in dark, darker in light so the two separate by lightness. ANSI-256: 204 / 124 · 16-color: red (1) + bold."
+   },
+   {
+    "name": "focus-ring",
+    "value": "{lagoon}",
+    "usage": "Alias. Focused pane border and title."
+   },
+   {
+    "name": "progress-fill",
+    "value": "{ember}",
+    "usage": "Alias. Elapsed part of the progress bar ━━━●; the remaining part uses border."
+   },
+   {
+    "name": "liked",
+    "value": "{ember}",
+    "usage": "Alias. The ♥ glyph next to liked tracks."
+   },
+   {
+    "name": "net-online",
+    "value": "{moss}",
+    "usage": "Alias. ● online indicator in the header."
+   },
+   {
+    "name": "spectrum-low",
+    "value": "{lagoon}",
+    "usage": "Alias. Visualizer bars, bottom third of the height."
+   },
+   {
+    "name": "spectrum-mid",
+    "value": "{amber}",
+    "usage": "Alias. Visualizer bars, middle third."
+   },
+   {
+    "name": "spectrum-high",
+    "value": "{ember}",
+    "usage": "Alias. Visualizer bars, top third (peaks)."
+   }
+  ]
+ },
+ "type": {
+  "fonts": [],
+  "families": {
+   "mono": "\"JetBrains Mono\", \"Iosevka Term\", ui-monospace, Menlo, Consolas, monospace"
+  },
+  "groups": [
+   {
+    "name": "Terminal cells",
+    "family": "mono",
+    "styles": [
+     {
+      "name": "cell",
+      "fontSize": "14px",
+      "lineHeight": "20px",
+      "fontWeight": 400,
+      "sample": "Glasswater Signals  Lowtide Assembly  5:18",
+      "usage": "Everything in the TUI. One size: the terminal decides it; we only choose weight and color."
+     },
+     {
+      "name": "cell-bold",
+      "fontSize": "14px",
+      "lineHeight": "20px",
+      "fontWeight": 700,
+      "sample": "▶ Glasswater Signals",
+      "usage": "SGR 1. Now-playing title, focused pane title, current lyrics line."
+     },
+     {
+      "name": "cell-dim",
+      "fontSize": "14px",
+      "lineHeight": "20px",
+      "fontWeight": 400,
+      "sample": "Lowtide Assembly · Halflight Sessions",
+      "usage": "SGR 2 equivalent; render with ink-muted in 256/TrueColor, real SGR 2 only in 16-color mode."
+     },
+     {
+      "name": "cell-italic",
+      "fontSize": "14px",
+      "lineHeight": "20px",
+      "fontWeight": 400,
+      "fontStyle": "italic",
+      "sample": "(instrumental)",
+      "usage": "SGR 3. Lyrics annotations and empty-state hints only; many terminal fonts lack italics, so never load-bearing."
+     },
+     {
+      "name": "pane-title",
+      "fontSize": "14px",
+      "lineHeight": "20px",
+      "fontWeight": 700,
+      "letterSpacing": "0.06em",
+      "sample": "SEARCH › LOWTIDE",
+      "usage": "Uppercase pane titles embedded in the top border (' SEARCH › lowtide ')."
+     }
+    ]
+   },
+   {
+    "name": "Docs display",
+    "family": "mono",
+    "styles": [
+     {
+      "name": "display",
+      "fontSize": "96px",
+      "lineHeight": "0.95",
+      "fontWeight": 800,
+      "sample": "ytm-tui",
+      "usage": "Docs, README banner and this system's cover only — never inside the terminal."
+     },
+     {
+      "name": "doc-body",
+      "fontSize": "14px",
+      "lineHeight": "22px",
+      "fontWeight": 400,
+      "sample": "A keyboard-first YouTube Music client.",
+      "usage": "Prose in docs and the --help man page renderer."
+     }
+    ]
+   }
+  ]
+ },
+ "spacing": {
+  "note": "The TUI lays out in cells, not pixels. Pixel values are the 14px-font approximation used by previews; code uses the column/row counts in each usage note.",
+  "tokens": [
+   {
+    "name": "col-1",
+    "value": "8px",
+    "usage": "1 column. Inner horizontal padding of every pane; gap between table columns."
+   },
+   {
+    "name": "col-2",
+    "value": "16px",
+    "usage": "2 columns. Indent for nested items (sidebar playlists) and the gap before right-aligned footer metadata."
+   },
+   {
+    "name": "row-1",
+    "value": "20px",
+    "usage": "1 row. Height of every list item; one blank row separates sidebar groups."
+   },
+   {
+    "name": "sidebar-w",
+    "value": "160px",
+    "usage": "20 columns fixed. Collapses to 3-column icon rail below 90 terminal columns."
+   },
+   {
+    "name": "side-panel-w",
+    "value": "192px",
+    "usage": "24 columns default (lyrics / spectrum). Hidden below 110 columns; toggled with V."
+   },
+   {
+    "name": "footer-h",
+    "value": "60px",
+    "usage": "3 rows fixed: track line, progress line, key-hint line (hint line hides below 24 rows)."
+   }
+  ]
+ },
+ "radius": {
+  "tokens": [
+   {
+    "name": "radius-square",
+    "value": "0px",
+    "usage": "Plain border set ┌─┐└─┘ — unfocused panes, tables."
+   },
+   {
+    "name": "radius-round",
+    "value": "6px",
+    "usage": "Rounded border set ╭─╮╰─╯ (ratatui BorderType::Rounded) — the focused pane and every popup. Shape + lagoon color mark focus together."
+   }
+  ]
+ }
+}

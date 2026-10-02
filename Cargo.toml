@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = ["crates/ytm-api", "crates/ytm-audio", "crates/ytm-core", "crates/ytm-tui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.88"
+repository = "https://github.com/izzyzizou/ytm-tui"
+homepage = "https://github.com/izzyzizou/ytm-tui"
+
+[workspace.dependencies]
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+crossterm = { version = "0.28", features = ["event-stream"] }
+directories = "5"
+fastrand = "2"
+futures = "0.3"
+ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-width = "0.2"
+
+ytm-api = { path = "crates/ytm-api" }
+ytm-audio = { path = "crates/ytm-audio" }
+ytm-core = { path = "crates/ytm-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

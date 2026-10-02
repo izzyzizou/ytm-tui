@@ -1,0 +1,11 @@
+# Copy to ~/.config/ytm-tui/config.toml (Linux) or
+# ~/Library/Application Support/ytm-tui/config.toml (macOS). Every key is optional.
+
+[audio]
+backend = "auto"   # auto (mpv, else silent) | mpv | null
+volume = 72
+format = "bestaudio[acodec=opus]/bestaudio/best"   # yt-dlp format selector
+
+[ui]
+theme = "dark"     # dark | light
+mouse = true

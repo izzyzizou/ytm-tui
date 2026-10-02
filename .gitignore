@@ -1,0 +1,28 @@
+# Rust build output
+/target/
+
+# Local editor/IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local environment/config overrides
+.env
+.env.*
+
+# Local agent settings
+.claude/
+
+# Never commit credentials: copied browser requests, ytmusicapi headers, cookie jars
+req.txt
+headers_auth.json
+browser.json
+oauth.json
+cookies.txt
+*.cookies
