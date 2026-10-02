@@ -1,5 +1,7 @@
 # ytm-tui
 
+[![CI](https://github.com/izzyzizou/ytm-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/izzyzizou/ytm-tui/actions/workflows/ci.yml)
+
 A keyboard-first YouTube Music client for the terminal. Vim-style keys, a calm two-theme
 palette that degrades from TrueColor to 16 colors, synced lyrics, and a background
 daemon you can control from scripts, status bars or another terminal.
