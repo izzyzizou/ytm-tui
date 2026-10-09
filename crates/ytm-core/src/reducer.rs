@@ -14,6 +14,10 @@ const PREV_RESTART: Duration = Duration::from_secs(3);
 const MAX_ATTEMPTS: u8 = 2;
 /// Seek ceiling when the duration is unknown, so a bogus `seek 1e30` can't overflow `Duration`.
 const MAX_SEEK_S: f64 = 24.0 * 3600.0;
+/// Prefetch the next stream once this fraction of the track has played…
+const PREFETCH_FRACTION: f64 = 0.75;
+/// …or once this little is left, whichever comes first.
+const PREFETCH_REMAINING: Duration = Duration::from_secs(30);
 
 /// What a client asks the player to do. Serialized as `{"cmd": "...", ...}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,6 +98,10 @@ pub enum Effect {
         video_id: String,
         fresh: bool,
     },
+    /// Warm the stream cache for the upcoming track; nothing is played.
+    Prefetch {
+        video_id: String,
+    },
     Load {
         media: Media,
         start: Duration,
@@ -129,6 +137,7 @@ fn start_current(s: &mut PlayerState, start: Duration, fresh: bool) -> Vec<Effec
     s.pending_start = start;
     s.duration = track.duration();
     s.stream = None;
+    s.prefetched = None;
     vec![Effect::Resolve { seq: s.load_seq, video_id: track.video_id, fresh }]
 }
 
@@ -163,6 +172,33 @@ fn advance(s: &mut PlayerState, auto: bool) -> Vec<Effect> {
     } else {
         stop(s)
     }
+}
+
+/// The track `advance(s, true)` would play next, if it differs from the current one.
+fn upcoming(s: &PlayerState) -> Option<&Track> {
+    let cur = s.queue.current?;
+    let next = match s.repeat {
+        Repeat::One => return None,
+        _ if cur + 1 < s.queue.items.len() => cur + 1,
+        Repeat::All => 0,
+        Repeat::Off => return None,
+    };
+    (next != cur).then(|| &s.queue.items[next])
+}
+
+/// Prefetch the upcoming track once, when the current one is near its end.
+fn maybe_prefetch(s: &mut PlayerState) -> Vec<Effect> {
+    let Some(d) = s.duration else { return vec![] };
+    let near_end = s.position.as_secs_f64() >= d.as_secs_f64() * PREFETCH_FRACTION || s.position + PREFETCH_REMAINING >= d;
+    if !near_end {
+        return vec![];
+    }
+    let Some(id) = upcoming(s).map(|t| t.video_id.clone()) else { return vec![] };
+    if s.prefetched.as_ref() == Some(&id) {
+        return vec![];
+    }
+    s.prefetched = Some(id.clone());
+    vec![Effect::Prefetch { video_id: id }]
 }
 
 fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
@@ -358,6 +394,9 @@ fn player_event(s: &mut PlayerState, e: PlayerEvent) -> Vec<Effect> {
                 s.position = p;
                 if s.attempts > 0 && p > s.pending_start + Duration::from_secs(5) {
                     s.attempts = 0; // healthy again
+                }
+                if s.status == Status::Playing {
+                    return maybe_prefetch(s);
                 }
             }
             vec![]
@@ -636,6 +675,72 @@ mod tests {
         let fx = reduce(&mut s, Input::Player(PlayerEvent::Exited));
         assert!(fx.contains(&Effect::RestartBackend));
         assert_eq!(s.pending_start, Duration::from_secs(10));
+    }
+
+    fn at(s: &mut PlayerState, secs: u64) -> Vec<Effect> {
+        reduce(s, Input::Player(PlayerEvent::Position(Duration::from_secs(secs))))
+    }
+
+    fn prefetch(id: &str) -> Vec<Effect> {
+        vec![Effect::Prefetch { video_id: id.into() }]
+    }
+
+    #[test]
+    fn prefetches_next_track_once_at_75_percent() {
+        let mut s = playing(&["a", "b"]); // 200 s tracks
+        assert!(at(&mut s, 149).is_empty());
+        assert_eq!(at(&mut s, 150), prefetch("b"));
+        assert!(at(&mut s, 151).is_empty(), "only once per track");
+    }
+
+    #[test]
+    fn prefetches_with_30_seconds_left_on_short_tracks() {
+        let mut s = playing(&["a", "b"]);
+        s.duration = Some(Duration::from_secs(100)); // 75 % would be 75 s
+        assert!(at(&mut s, 69).is_empty());
+        assert_eq!(at(&mut s, 70), prefetch("b"));
+    }
+
+    #[test]
+    fn prefetch_follows_queue_and_repeat() {
+        let mut s = playing(&["a"]);
+        assert!(at(&mut s, 190).is_empty(), "nothing after the last track");
+        cmd(&mut s, Command::Enqueue { tracks: vec![track("b")], next: false });
+        assert_eq!(at(&mut s, 191), prefetch("b"), "newly queued track is picked up");
+        cmd(&mut s, Command::Enqueue { tracks: vec![track("c")], next: true });
+        assert_eq!(at(&mut s, 192), prefetch("c"), "re-targets when the next track changes");
+
+        let mut s = playing(&["a", "b"]);
+        cmd(&mut s, Command::JumpTo { index: 1 });
+        finish_load(&mut s);
+        cmd(&mut s, Command::CycleRepeat); // all
+        assert_eq!(at(&mut s, 190), prefetch("a"), "repeat all wraps");
+        cmd(&mut s, Command::CycleRepeat); // one
+        cmd(&mut s, Command::JumpTo { index: 0 });
+        finish_load(&mut s);
+        assert!(at(&mut s, 190).is_empty(), "repeat one replays the cached track");
+    }
+
+    #[test]
+    fn no_prefetch_while_paused_or_without_duration() {
+        let mut s = playing(&["a", "b"]);
+        cmd(&mut s, Command::Pause);
+        assert!(at(&mut s, 190).is_empty());
+        cmd(&mut s, Command::Play);
+        s.duration = None;
+        assert!(at(&mut s, 190).is_empty());
+    }
+
+    #[test]
+    fn each_track_prefetches_its_successor() {
+        let mut s = playing(&["a", "b", "c"]);
+        assert_eq!(at(&mut s, 190), prefetch("b"));
+        reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        finish_load(&mut s);
+        assert_eq!(at(&mut s, 190), prefetch("c"));
+        cmd(&mut s, Command::JumpTo { index: 0 });
+        finish_load(&mut s);
+        assert_eq!(at(&mut s, 190), prefetch("b"), "replaying a track prefetches again");
     }
 
     #[test]
