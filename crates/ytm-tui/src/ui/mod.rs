@@ -314,33 +314,36 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) {
                         let cur = l.current(app.display_position(), app.lyrics_offset_ms);
                         let h = body.height as usize;
                         let anchor = h / 3;
+                        // Wrap each lyric line to the panel width; scroll by visual rows.
+                        let text_w = (body.width as usize).saturating_sub(2);
+                        let rows: Vec<(usize, bool, String)> = l
+                            .lines
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, line)| wrap_words(&line.text, text_w).into_iter().enumerate().map(move |(j, r)| (i, j == 0, r)))
+                            .collect();
                         let start = if l.synced {
-                            cur.unwrap_or(0).saturating_sub(anchor)
+                            let cur_row = cur.and_then(|c| rows.iter().position(|(i, _, _)| *i == c)).unwrap_or(0);
+                            cur_row.saturating_sub(anchor)
                         } else {
                             // Unsynced: scroll proportionally to playback position.
                             let frac = match app.player.duration {
                                 Some(d) if !d.is_zero() => app.display_position().as_secs_f64() / d.as_secs_f64(),
                                 _ => 0.0,
                             };
-                            ((l.lines.len().saturating_sub(h)) as f64 * frac) as usize
+                            ((rows.len().saturating_sub(h)) as f64 * frac.clamp(0.0, 1.0)) as usize
                         };
-                        let width = body.width as usize;
-                        let lines: Vec<Line> = l
-                            .lines
-                            .iter()
-                            .enumerate()
+                        let lines: Vec<Line> = rows
+                            .into_iter()
                             .skip(start)
                             .take(h)
-                            .map(|(i, line)| {
-                                let text = truncate(&line.text, width.saturating_sub(2));
-                                match cur {
-                                    Some(c) if c == i => Line::from(vec![
-                                        Span::styled("› ", Style::new().fg(t.ember)),
-                                        Span::styled(text, Style::new().fg(t.ember).bold()),
-                                    ]),
-                                    Some(c) if i == c + 1 || i + 1 == c => Line::styled(format!("  {text}"), Style::new().fg(t.ink)),
-                                    _ => Line::styled(format!("  {text}"), Style::new().fg(t.ink_muted)),
-                                }
+                            .map(|(i, first, text)| match cur {
+                                Some(c) if c == i => Line::from(vec![
+                                    Span::styled(if first { "› " } else { "  " }, Style::new().fg(t.ember)),
+                                    Span::styled(text, Style::new().fg(t.ember).bold()),
+                                ]),
+                                Some(c) if i == c + 1 || i + 1 == c => Line::styled(format!("  {text}"), Style::new().fg(t.ink)),
+                                _ => Line::styled(format!("  {text}"), Style::new().fg(t.ink_muted)),
                             })
                             .collect();
                         f.render_widget(Paragraph::new(lines), body);
@@ -545,6 +548,39 @@ pub fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// Word-wrap to rows of at most `max` display cells. Words wider than `max` are split
+/// by character; an empty input yields one empty row so blank lyric lines keep their gap.
+fn wrap_words(s: &str, max: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    if max == 0 {
+        return vec![row];
+    }
+    for word in s.split_whitespace() {
+        let need = if row.is_empty() { word.width() } else { row.width() + 1 + word.width() };
+        if need <= max {
+            if !row.is_empty() {
+                row.push(' ');
+            }
+            row.push_str(word);
+            continue;
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        for c in word.chars() {
+            if row.width() + c.width().unwrap_or(0) > max && !row.is_empty() {
+                rows.push(std::mem::take(&mut row));
+            }
+            row.push(c);
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
 /// Truncate/pad to exactly `width` cells, leaving one trailing space as a column gap.
 fn pad_to(s: &str, width: usize) -> String {
     if width == 0 {
@@ -566,6 +602,16 @@ mod tests {
         assert_eq!(truncate("日本語の曲", 5), "日本…");
         assert_eq!(pad_to("abc", 6).width(), 6);
         assert_eq!(pad_to("日本語の曲名", 7).width(), 7);
+    }
+
+    #[test]
+    fn wrap_keeps_every_word() {
+        assert_eq!(wrap_words("", 10), vec![""]);
+        assert_eq!(wrap_words("short", 10), vec!["short"]);
+        assert_eq!(wrap_words("one more time we're gonna celebrate", 12), vec!["one more", "time we're", "gonna", "celebrate"]);
+        assert_eq!(wrap_words("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap_words("日本語の曲", 4), vec!["日本", "語の", "曲"]);
+        assert!(wrap_words("a long lyric line that would have been cut", 8).iter().all(|r| r.width() <= 8));
     }
 
     #[test]
