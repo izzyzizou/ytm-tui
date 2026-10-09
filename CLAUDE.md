@@ -66,5 +66,6 @@ Dependency direction: `ytm-tui → ytm-core → (ytm-api, ytm-audio)`. `ytm-api`
   The resolver maps that error to `ResolveError::BotCheck` with a helpful message.
 - Anonymous search returns no "Songs" filter chip, so results mix videos/episodes and many
   lack durations. Signed-in sessions get the Songs shelf (`search::filter_params`).
-- `InnerTube::CLIENT_VERSION` should be bumped occasionally.
+- The WEB_REMIX `clientVersion` is derived from today's UTC date (`client::client_version`), as
+  the web app does, so it no longer needs bumping. The visitor id persists in `state_dir/visitor_data`.
 - Windows: socket/mpv transports are Unix-only for now (named pipes are a TODO).

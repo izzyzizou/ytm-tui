@@ -355,16 +355,22 @@ impl App {
             Char('}') => self.seek(30.0),
             Char('s') => self.send(Command::SetShuffle { on: None }),
             Char('r') => self.send(Command::CycleRepeat),
+            Char('X') => self.send(Command::SetAutoplay { on: None }),
             Char('a') => self.enqueue_selected(false),
             Char('A') => self.enqueue_selected(true),
             Char('d') | Delete if self.view == View::Queue => self.send(Command::Remove { index: self.queue_cursor }),
             Char('J') if self.view == View::Queue => self.move_queue_item(1),
             Char('K') if self.view == View::Queue => self.move_queue_item(-1),
             Char('c') if self.view == View::Queue => self.send(Command::Clear),
+            Char('x') if self.view == View::Queue => self.send(Command::ClearAutoplay),
+            Char('R') => {
+                let track = self.selected_track().cloned();
+                self.send(Command::Radio { track });
+            }
             Char('.') => self.jump_to_now_playing(),
             Char('y') => self.copy_selected(false),
             Char('Y') => self.copy_selected(true),
-            Char('L') | Char('R') | Char('D') | Char('P') => self.toast(Level::Info, "not implemented yet · see docs/ROADMAP.md"),
+            Char('L') | Char('D') | Char('P') => self.toast(Level::Info, "not implemented yet · see docs/ROADMAP.md"),
             Char('V') => self.side_visible = !self.side_visible,
             Char('t') => {
                 self.side_tab = match self.side_tab {

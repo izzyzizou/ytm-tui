@@ -47,6 +47,15 @@ pub enum ItemKind {
     Episode,
 }
 
+/// A watch queue from the `next` endpoint (radio), one page at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchPlaylist {
+    pub tracks: Vec<Track>,
+    /// Token for the next page; `None` when the queue has ended.
+    #[serde(default)]
+    pub continuation: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchKind {

@@ -51,6 +51,8 @@ ytm-tui play "daft punk one more time"   # search + play best match
 ytm-tui queue add "around the world" [--next]
 ytm-tui toggle | next | prev | stop
 ytm-tui seek +30 | seek 1:30 | volume -10
+ytm-tui radio                            # radio from the current track
+ytm-tui autoplay off                     # don't add radio when the queue runs out
 ytm-tui status --format '{artist} - {title} [{elapsed}/{duration}]'
 ytm-tui status --json
 ytm-tui lyrics --synced
@@ -63,14 +65,14 @@ Exit codes: 0 ok · 1 error · 2 usage · 3 daemon not running · 4 not found ·
 
 `/` search · `Enter` play · `Space` pause · `n`/`p` next/prev · `[ ]` seek ±5s · `{ }` ±30s ·
 `+`/`-` volume · `a`/`A` queue / play next · `7` queue view · `J`/`K` move · `d` remove ·
-`s` shuffle · `r` repeat · `y` copy link · `V` side panel · `?` all keys · `q` quit · `Q`
+`s` shuffle · `r` repeat · `R` radio · `x` clear suggestions · `X` autoplay on/off · `y` copy link · `V` side panel · `?` all keys · `q` quit · `Q`
 quit but keep playing. Full map: `docs/blueprint/3-keybindings.md`.
 
 ## Status
 
-Search, playback through mpv, queue, shuffle/repeat, synced lyrics (LRCLIB), the daemon +
-CLI and the TUI work. Library views, likes, radio, album art, media keys and the
-visualizer are next — see `docs/ROADMAP.md`.
+Search, playback through mpv, queue, shuffle/repeat, radio and autoplay, synced lyrics
+(LRCLIB), the daemon + CLI and the TUI work. Library views, likes, album art, media keys and
+the visualizer are next — see `docs/ROADMAP.md`.
 
 ## Contributing
 

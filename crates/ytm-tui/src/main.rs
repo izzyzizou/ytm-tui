@@ -58,6 +58,12 @@ pub enum Cmd {
     },
     /// Cycle repeat: off → all → one
     Repeat,
+    /// Start radio from the current track (replaces the queue's autoplay section)
+    Radio,
+    /// Autoplay radio when the queue runs out: on | off | toggle
+    Autoplay {
+        mode: Option<String>,
+    },
     /// Show or edit the queue
     Queue {
         #[command(subcommand)]
@@ -165,6 +171,7 @@ async fn run_daemon(backend: Option<String>) -> std::process::ExitCode {
         socket: paths::socket_path(),
         volume: cfg.audio.volume,
         ytdlp_format: cfg.audio.format,
+        autoplay: cfg.player.autoplay,
     };
     match ytm_core::daemon::run(opts).await {
         Ok(()) => std::process::ExitCode::SUCCESS,

@@ -135,6 +135,7 @@ ytm-tui seek +30 | seek -10 | seek 1:30
 ytm-tui volume 60 | volume +5
 ytm-tui like | unlike                    # current track
 ytm-tui radio                            # radio from current track
+ytm-tui autoplay on | off | toggle       # radio when the queue runs out
 ytm-tui status                           # one-line human status
 ytm-tui status --json                    # machine-readable (schema below)
 ytm-tui status --format '{artist} - {title} [{elapsed}/{duration}]'   # for status bars
@@ -166,7 +167,9 @@ ytm-tui daemon [--detach]
   "volume": 72,
   "shuffle": true,
   "repeat": "all",
-  "queue": { "index": 0, "length": 12 },
+  "queue": { "index": 0, "length": 12, "autoplay": 9 },
+  "autoplay": true,
+  "radio": { "seed": { "video_id": "abc123XYZ00", "title": "Glasswater Signals" }, "loading": false },
   "stream": { "codec": "opus", "bitrate_kbps": 160, "sample_rate": 48000, "cached": true },
   "network": "online"
 }

@@ -35,6 +35,11 @@ pub fn cookies_txt() -> PathBuf {
     state_dir().join("cookies.txt")
 }
 
+/// InnerTube visitor id, kept so the daemon presents as the same visitor across restarts.
+pub fn visitor_file() -> PathBuf {
+    state_dir().join("visitor_data")
+}
+
 pub fn log_file_dir() -> PathBuf {
     state_dir()
 }

@@ -3,7 +3,8 @@
 //! ```text
 //! socket ─► connection tasks ─► CoreMsg ─┐
 //! backend ─────────► PlayerEvent ────────┼─► core loop: reduce() → effects → backend / resolver
-//! resolver tasks ──► Input::Resolved ────┘            └─► broadcast Event to subscribers
+//! resolver tasks ──► Input::Resolved ────┤            └─► broadcast Event to subscribers
+//! radio fetches ───► Input::Radio ───────┘
 //! ```
 
 use std::collections::HashMap;
@@ -34,6 +35,8 @@ pub struct DaemonOptions {
     pub socket: PathBuf,
     pub volume: u8,
     pub ytdlp_format: String,
+    /// Play radio suggestions when the queue runs out.
+    pub autoplay: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,7 +101,8 @@ pub async fn run(opts: DaemonOptions) -> Result<(), DaemonError> {
         None => None,
     };
     let authenticated = creds.is_some();
-    let api: Arc<dyn MusicApi> = Arc::new(InnerTube::new(creds).map_err(|e| DaemonError::Other(e.to_string()))?);
+    let api: Arc<dyn MusicApi> =
+        Arc::new(InnerTube::new(creds).map_err(|e| DaemonError::Other(e.to_string()))?.with_visitor_file(crate::paths::visitor_file()));
 
     let (core_tx, core_rx) = mpsc::unbounded_channel();
     let (events_tx, _) = broadcast::channel(256);
@@ -128,7 +132,13 @@ pub async fn run(opts: DaemonOptions) -> Result<(), DaemonError> {
         }
     });
 
-    let mut state = PlayerState { volume: opts.volume, backend: backend.name().into(), authenticated, ..PlayerState::default() };
+    let mut state = PlayerState {
+        volume: opts.volume,
+        backend: backend.name().into(),
+        authenticated,
+        autoplay: opts.autoplay,
+        ..PlayerState::default()
+    };
     let mut core = Core {
         backend,
         backend_kind: opts.backend.clone(),
@@ -260,6 +270,17 @@ impl Core {
                         }
                         Err(e) => tracing::debug!("prefetch {video_id}: {e}"),
                     }
+                });
+                Ok(())
+            }
+            Effect::FetchRadio { seq, seed, continuation } => {
+                let (api, tx) = (self.shared.api.clone(), self.core_tx.clone());
+                tokio::spawn(async move {
+                    let result = api.radio(&seed, continuation.as_deref()).await.map_err(|e| e.to_string());
+                    if let Err(e) = &result {
+                        tracing::warn!("radio from {seed}: {e}");
+                    }
+                    let _ = tx.send(CoreMsg::Input(Input::Radio { seq, result }));
                 });
                 Ok(())
             }

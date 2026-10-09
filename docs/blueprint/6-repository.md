@@ -705,6 +705,9 @@ prefer = "opus"             # opus | aac
 volume = 72
 gapless = true
 
+[player]
+autoplay = true             # radio when the queue runs out
+
 [cache]
 thumbs_max = "200MiB"
 audio = false               # opt-in raw audio cache
