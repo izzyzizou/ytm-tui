@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::models::{parse_duration, ItemKind, Track};
+use crate::parse::{find_key, last_thumbnail, page_type, runs_text, visit};
 
 /// The `params` of a search filter chip (e.g. "Songs"), if the server offered it.
 pub fn filter_params(resp: &Value, label: &str) -> Option<String> {
@@ -70,7 +71,7 @@ fn parse_card(card: &Value) -> Option<Track> {
     build(video_id, runs_text(title), &meta, thumbnail)
 }
 
-fn build(video_id: String, title: String, meta: &[&Value], thumbnail: Option<String>) -> Option<Track> {
+pub(crate) fn build(video_id: String, title: String, meta: &[&Value], thumbnail: Option<String>) -> Option<Track> {
     let mut kind = ItemKind::Song;
     let mut artists = Vec::new();
     let mut album = None;
@@ -100,10 +101,7 @@ fn build(video_id: String, title: String, meta: &[&Value], thumbnail: Option<Str
             duration_s = Some(d);
             continue;
         }
-        match run
-            .pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
-            .and_then(Value::as_str)
-        {
+        match page_type(run) {
             Some("MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL") => artists.push(text.to_string()),
             Some("MUSIC_PAGE_TYPE_ALBUM") => album = Some(text.to_string()),
             _ => loose.push(text.to_string()),
@@ -124,42 +122,6 @@ fn build(video_id: String, title: String, meta: &[&Value], thumbnail: Option<Str
 fn looks_like_stat(t: &str) -> bool {
     let l = t.to_ascii_lowercase();
     l.ends_with(" views") || l.ends_with(" plays") || l.ends_with(" audience") || l.chars().next().is_some_and(|c| c.is_ascii_digit())
-}
-
-fn runs_text(v: &Value) -> String {
-    v.get("runs")
-        .and_then(Value::as_array)
-        .map(|runs| runs.iter().filter_map(|r| r.get("text")?.as_str()).collect::<String>())
-        .or_else(|| v.get("simpleText").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn last_thumbnail(v: Option<&Value>) -> Option<String> {
-    v?.as_array()?.last()?.get("url")?.as_str().map(str::to_owned)
-}
-
-/// Depth-first visit of every object key (does not descend into matched renderers' children twice).
-fn visit<'a>(v: &'a Value, f: &mut impl FnMut(&str, &'a Value)) {
-    match v {
-        Value::Object(map) => {
-            for (k, child) in map {
-                f(k, child);
-                if k != "musicResponsiveListItemRenderer" {
-                    visit(child, f);
-                }
-            }
-        }
-        Value::Array(items) => items.iter().for_each(|c| visit(c, f)),
-        _ => {}
-    }
-}
-
-fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-    match v {
-        Value::Object(map) => map.get(key).or_else(|| map.values().find_map(|c| find_key(c, key))),
-        Value::Array(items) => items.iter().find_map(|c| find_key(c, key)),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

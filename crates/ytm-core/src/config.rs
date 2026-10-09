@@ -6,7 +6,21 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     pub audio: AudioConfig,
+    pub player: PlayerConfig,
     pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayerConfig {
+    /// When the queue runs out, keep playing radio based on the last track.
+    pub autoplay: bool,
+}
+
+impl Default for PlayerConfig {
+    fn default() -> Self {
+        Self { autoplay: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

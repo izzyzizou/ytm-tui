@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use ytm_api::Track;
+use ytm_api::{Track, WatchPlaylist};
 use ytm_audio::{Media, PlayerEvent, StreamInfo};
 
-use crate::state::{PlayerState, Repeat, Status};
+use crate::state::{PlayerState, Radio, Repeat, Status};
 
 /// `p` within this much of the start goes to the previous track; later it restarts.
 const PREV_RESTART: Duration = Duration::from_secs(3);
@@ -18,6 +18,8 @@ const MAX_SEEK_S: f64 = 24.0 * 3600.0;
 const PREFETCH_FRACTION: f64 = 0.75;
 /// …or once this little is left, whichever comes first.
 const PREFETCH_REMAINING: Duration = Duration::from_secs(30);
+/// While a radio is active, fetch its next page once this few tracks are left after the current one.
+const RADIO_LOW_WATER: usize = 3;
 
 /// What a client asks the player to do. Serialized as `{"cmd": "...", ...}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,13 +69,32 @@ pub enum Command {
         on: Option<bool>,
     },
     CycleRepeat,
+    /// Start radio from `track` (default: the current track), replacing the autoplay section.
+    /// A track that isn't already queued leads the new section.
+    Radio {
+        #[serde(default)]
+        track: Option<Track>,
+    },
+    /// Drop the autoplay section and the radio feeding it.
+    ClearAutoplay,
+    SetAutoplay {
+        on: Option<bool>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
     Cmd(Command),
     Player(PlayerEvent),
-    Resolved { seq: u64, result: Result<StreamInfo, String> },
+    Resolved {
+        seq: u64,
+        result: Result<StreamInfo, String>,
+    },
+    /// A page of radio for `Effect::FetchRadio { seq, .. }`.
+    Radio {
+        seq: u64,
+        result: Result<WatchPlaylist, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +123,12 @@ pub enum Effect {
     Prefetch {
         video_id: String,
     },
+    /// Fetch a page of radio from `seed`, or the page after `continuation`.
+    FetchRadio {
+        seq: u64,
+        seed: String,
+        continuation: Option<String>,
+    },
     Load {
         media: Media,
         start: Duration,
@@ -119,11 +146,15 @@ fn toast(level: Level, text: impl Into<String>) -> Effect {
 }
 
 pub fn reduce(s: &mut PlayerState, input: Input) -> Vec<Effect> {
-    match input {
+    s.queue.settle();
+    let fx = match input {
         Input::Cmd(c) => command(s, c),
         Input::Player(e) => player_event(s, e),
         Input::Resolved { seq, result } => resolved(s, seq, result),
-    }
+        Input::Radio { seq, result } => radio_page(s, seq, result),
+    };
+    s.queue.settle();
+    fx
 }
 
 /// Begin loading the current track at `start`.
@@ -138,7 +169,9 @@ fn start_current(s: &mut PlayerState, start: Duration, fresh: bool) -> Vec<Effec
     s.duration = track.duration();
     s.stream = None;
     s.prefetched = None;
-    vec![Effect::Resolve { seq: s.load_seq, video_id: track.video_id, fresh }]
+    let mut fx = vec![Effect::Resolve { seq: s.load_seq, video_id: track.video_id, fresh }];
+    fx.extend(maybe_autoplay(s));
+    fx
 }
 
 fn play_index(s: &mut PlayerState, index: usize) -> Vec<Effect> {
@@ -146,12 +179,15 @@ fn play_index(s: &mut PlayerState, index: usize) -> Vec<Effect> {
         return vec![];
     }
     s.queue.current = Some(index);
+    s.queue.settle();
     s.attempts = 0;
+    s.radio_resume = false;
     start_current(s, Duration::ZERO, false)
 }
 
 fn stop(s: &mut PlayerState) -> Vec<Effect> {
     s.load_seq += 1; // invalidate in-flight resolutions
+    s.radio_resume = false;
     s.status = Status::Stopped;
     s.position = Duration::ZERO;
     s.stream = None;
@@ -170,7 +206,87 @@ fn advance(s: &mut PlayerState, auto: bool) -> Vec<Effect> {
     } else if s.repeat != Repeat::Off && !s.queue.items.is_empty() {
         play_index(s, 0)
     } else {
-        stop(s)
+        // Out of tracks. With autoplay, wait for radio (normally it's already queued by now).
+        let mut fx = stop(s);
+        if s.autoplay {
+            fx.extend(fetch_radio(s));
+            s.radio_resume = s.radio.as_ref().is_some_and(|r| r.loading);
+        }
+        fx
+    }
+}
+
+/// Drop the radio and anything it has in flight.
+fn reset_radio(s: &mut PlayerState) {
+    s.radio = None;
+    s.radio_seq += 1;
+    s.radio_resume = false;
+}
+
+/// Ask for more radio: the next page of the current radio, or a fresh one seeded from the last
+/// track in the queue once that has run out. No-op while a page is loading.
+fn fetch_radio(s: &mut PlayerState) -> Vec<Effect> {
+    if s.radio.as_ref().is_some_and(|r| r.loading) {
+        return vec![];
+    }
+    let (seed, continuation) = match &s.radio {
+        Some(r) if r.continuation.is_some() => (r.seed.clone(), r.continuation.clone()),
+        _ => match s.queue.items.last() {
+            Some(last) => (last.clone(), None),
+            None => return vec![],
+        },
+    };
+    s.radio_seq += 1;
+    let effect = Effect::FetchRadio { seq: s.radio_seq, seed: seed.video_id.clone(), continuation: continuation.clone() };
+    s.radio = Some(Radio { seed, loading: true, continuation });
+    vec![effect]
+}
+
+/// Keep the autoplay section topped up when a track starts: with autoplay on and repeat off,
+/// fetch radio once the queue is on its last track (or a running radio is nearly used up).
+fn maybe_autoplay(s: &mut PlayerState) -> Vec<Effect> {
+    if !s.autoplay || s.repeat != Repeat::Off {
+        return vec![];
+    }
+    let Some(cur) = s.queue.current else { return vec![] };
+    let left = s.queue.items.len().saturating_sub(cur + 1);
+    let low = if s.radio.is_some() { left <= RADIO_LOW_WATER } else { left == 0 };
+    let id = &s.queue.items[cur].video_id;
+    if !low || s.radio_asked_for.as_ref() == Some(id) {
+        return vec![];
+    }
+    s.radio_asked_for = Some(id.clone());
+    fetch_radio(s)
+}
+
+fn radio_page(s: &mut PlayerState, seq: u64, result: Result<WatchPlaylist, String>) -> Vec<Effect> {
+    if seq != s.radio_seq {
+        return vec![]; // stale: radio was restarted or cleared
+    }
+    let resume = std::mem::take(&mut s.radio_resume);
+    let Some(radio) = s.radio.as_mut() else { return vec![] };
+    radio.loading = false;
+    let page = match result {
+        Ok(page) => page,
+        Err(e) => return vec![toast(Level::Warn, format!("radio: {e}"))],
+    };
+    radio.continuation = page.continuation;
+    let mut fresh: Vec<Track> = Vec::new();
+    for t in page.tracks {
+        if !s.queue.items.iter().chain(&fresh).any(|q| q.video_id == t.video_id) {
+            fresh.push(t);
+        }
+    }
+    if fresh.is_empty() {
+        return if resume { vec![toast(Level::Info, "autoplay · no more suggestions")] } else { vec![] };
+    }
+    let at = s.queue.items.len();
+    s.queue.autoplay += fresh.len();
+    s.queue.items.extend(fresh);
+    if resume && s.status == Status::Stopped {
+        play_index(s, at)
+    } else {
+        vec![]
     }
 }
 
@@ -254,8 +370,10 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
                 return vec![toast(Level::Warn, "nothing to play")];
             }
             let start = start.min(tracks.len() - 1);
+            reset_radio(s);
             s.queue.items = tracks;
             s.queue.current = Some(start);
+            s.queue.autoplay = 0;
             s.queue.unshuffled = None;
             if s.shuffle {
                 s.queue.shuffle_upcoming();
@@ -269,9 +387,10 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
                 return vec![];
             }
             let was_idle = s.status == Status::Stopped && !s.queue.has_next();
+            // User picks go above the autoplay section.
             let at = match (next, s.queue.current) {
                 (true, Some(c)) => c + 1,
-                _ => s.queue.items.len(),
+                _ => s.queue.autoplay_start(),
             };
             s.queue.items.splice(at..at, tracks);
             let msg = if n == 1 { "added 1 track".to_string() } else { format!("added {n} tracks") };
@@ -284,6 +403,9 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
         Command::Remove { index } => {
             if index >= s.queue.items.len() {
                 return vec![];
+            }
+            if s.queue.is_autoplay(index) {
+                s.queue.autoplay -= 1;
             }
             s.queue.items.remove(index);
             match s.queue.current {
@@ -301,8 +423,15 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
         }
         Command::Move { from, to } => {
             let len = s.queue.items.len();
+            let boundary = s.queue.autoplay_start();
+            // A suggestion moved above the divider becomes the user's pick; the user's own
+            // tracks stay above it.
+            let to = if from < boundary { to.min(boundary.saturating_sub(1)) } else { to };
             if from >= len || to >= len || from == to {
                 return vec![];
+            }
+            if from >= boundary && to < boundary {
+                s.queue.autoplay -= 1;
             }
             let item = s.queue.items.remove(from);
             s.queue.items.insert(to, item);
@@ -328,6 +457,7 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
                 }
                 None => s.queue.items.clear(),
             }
+            s.queue.autoplay = 0;
             s.queue.unshuffled = None;
             vec![toast(Level::Info, "queue cleared")]
         }
@@ -347,6 +477,50 @@ fn command(s: &mut PlayerState, c: Command) -> Vec<Effect> {
         Command::CycleRepeat => {
             s.repeat = s.repeat.cycle();
             vec![]
+        }
+        Command::Radio { track } => {
+            let Some(seed) = track.or_else(|| s.current_track().cloned()) else {
+                return vec![toast(Level::Warn, "nothing to start radio from")];
+            };
+            s.queue.clear_autoplay();
+            reset_radio(s);
+            let mut fx = vec![toast(Level::Info, format!("radio from {}", seed.title))];
+            let queued = s.queue.items.iter().any(|t| t.video_id == seed.video_id);
+            let was_idle = s.status == Status::Stopped && !s.queue.has_next();
+            if !queued {
+                s.queue.items.push(seed.clone());
+                s.queue.autoplay += 1;
+            }
+            s.radio_seq += 1;
+            fx.push(Effect::FetchRadio { seq: s.radio_seq, seed: seed.video_id.clone(), continuation: None });
+            s.radio = Some(Radio { seed, loading: true, continuation: None });
+            if !queued && was_idle {
+                fx.extend(play_index(s, s.queue.items.len() - 1));
+            }
+            fx
+        }
+        Command::ClearAutoplay => {
+            let n = s.queue.clear_autoplay();
+            reset_radio(s);
+            let msg = if n == 1 { "removed 1 suggestion".to_string() } else { format!("removed {n} suggestions") };
+            vec![toast(Level::Info, msg)]
+        }
+        Command::SetAutoplay { on } => {
+            let on = on.unwrap_or(!s.autoplay);
+            if on == s.autoplay {
+                return vec![];
+            }
+            s.autoplay = on;
+            let mut fx = vec![toast(Level::Info, if on { "autoplay on" } else { "autoplay off" })];
+            if on {
+                s.radio_asked_for = None;
+                fx.extend(maybe_autoplay(s));
+            } else if let Some(r) = s.radio.as_mut().filter(|r| r.loading) {
+                r.loading = false;
+                s.radio_seq += 1; // drop the page in flight
+                s.radio_resume = false;
+            }
+            fx
         }
     }
 }
@@ -368,7 +542,7 @@ fn resolved(s: &mut PlayerState, seq: u64, result: Result<StreamInfo, String>) -
         Err(e) => {
             let title = s.current_track().map(|t| t.title.clone()).unwrap_or_default();
             let mut fx = vec![toast(Level::Error, format!("can't play {title}: {e} · skipped"))];
-            if s.queue.has_next() {
+            if s.queue.has_next() || (s.autoplay && s.repeat == Repeat::Off) {
                 fx.extend(advance(s, false));
             } else {
                 fx.extend(stop(s));
@@ -509,7 +683,11 @@ mod tests {
         let mut s = PlayerState::default();
         let fx = cmd(&mut s, Command::PlayTracks { tracks: vec![track("a"), track("b")], start: 1 });
         assert_eq!(s.status, Status::Loading);
-        assert_eq!(fx, vec![Effect::Resolve { seq: 1, video_id: "b".into(), fresh: false }]);
+        assert_eq!(fx[0], Effect::Resolve { seq: 1, video_id: "b".into(), fresh: false });
+        assert!(
+            matches!(&fx[1], Effect::FetchRadio { seed, continuation: None, .. } if seed == "b"),
+            "last track: autoplay asks for radio"
+        );
         finish_load(&mut s);
         assert_eq!(s.stream.as_ref().unwrap().codec, "opus");
     }
@@ -644,7 +822,7 @@ mod tests {
     fn removing_current_plays_next() {
         let mut s = playing(&["a", "b"]);
         let fx = cmd(&mut s, Command::Remove { index: 0 });
-        assert!(matches!(fx.as_slice(), [Effect::Resolve { video_id, .. }] if video_id == "b"));
+        assert!(matches!(fx.first(), Some(Effect::Resolve { video_id, .. }) if video_id == "b"));
     }
 
     #[test]
@@ -741,6 +919,216 @@ mod tests {
         cmd(&mut s, Command::JumpTo { index: 0 });
         finish_load(&mut s);
         assert_eq!(at(&mut s, 190), prefetch("b"), "replaying a track prefetches again");
+    }
+
+    fn ids(s: &PlayerState) -> Vec<&str> {
+        s.queue.items.iter().map(|t| t.video_id.as_str()).collect()
+    }
+
+    fn radio_fetch(fx: &[Effect]) -> Option<(u64, String, Option<String>)> {
+        fx.iter().find_map(|e| match e {
+            Effect::FetchRadio { seq, seed, continuation } => Some((*seq, seed.clone(), continuation.clone())),
+            _ => None,
+        })
+    }
+
+    fn page(ids: &[&str], continuation: Option<&str>) -> Result<WatchPlaylist, String> {
+        Ok(WatchPlaylist { tracks: ids.iter().map(|i| track(i)).collect(), continuation: continuation.map(Into::into) })
+    }
+
+    fn manual(ids: &[&str]) -> PlayerState {
+        let mut s = PlayerState { autoplay: false, ..PlayerState::default() };
+        cmd(&mut s, Command::PlayTracks { tracks: ids.iter().map(|i| track(i)).collect(), start: 0 });
+        finish_load(&mut s);
+        s
+    }
+
+    #[test]
+    fn autoplay_fills_the_queue_from_the_last_track() {
+        let mut s = PlayerState::default();
+        let fx = cmd(&mut s, Command::PlayTracks { tracks: vec![track("a"), track("b")], start: 0 });
+        assert_eq!(radio_fetch(&fx), None, "not yet: b is still to come");
+        finish_load(&mut s);
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        let (seq, seed, cont) = radio_fetch(&fx).expect("last track starts → radio");
+        assert_eq!((seed.as_str(), cont), ("b", None));
+        assert!(s.radio.as_ref().unwrap().loading);
+        finish_load(&mut s);
+
+        // The seed comes back first and is already queued; a and b are dropped as duplicates.
+        reduce(&mut s, Input::Radio { seq, result: page(&["b", "r1", "a", "r2", "r1"], Some("next-page")) });
+        assert_eq!(ids(&s), ["a", "b", "r1", "r2"]);
+        assert_eq!(s.queue.autoplay, 2);
+        assert!(!s.radio.as_ref().unwrap().loading);
+        assert_eq!(at(&mut s, 190), prefetch("r1"), "suggestions are prefetched like any next track");
+
+        reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        assert_eq!(s.current_track().unwrap().video_id, "r1");
+        assert_eq!(s.queue.autoplay, 1, "a played suggestion becomes history");
+    }
+
+    #[test]
+    fn running_radio_fetches_its_next_page_when_low() {
+        let mut s = playing(&["a"]);
+        let seq = s.radio_seq;
+        reduce(&mut s, Input::Radio { seq, result: page(&["a", "r1", "r2", "r3", "r4", "r5"], Some("p2")) });
+        assert_eq!(s.queue.autoplay, 5);
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended)); // r1: 4 left
+        assert_eq!(radio_fetch(&fx), None);
+        finish_load(&mut s);
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended)); // r2: 3 left
+        let (seq, seed, cont) = radio_fetch(&fx).expect("low water");
+        assert_eq!((seed.as_str(), cont.as_deref()), ("a", Some("p2")));
+        reduce(&mut s, Input::Radio { seq, result: page(&["r6"], None) });
+        assert_eq!(ids(&s).last(), Some(&"r6"));
+        assert_eq!(s.queue.autoplay, 4);
+    }
+
+    #[test]
+    fn exhausted_radio_reseeds_from_the_last_track() {
+        let mut s = playing(&["a"]);
+        let seq = s.radio_seq;
+        reduce(&mut s, Input::Radio { seq, result: page(&["r1"], None) });
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        let (_, seed, cont) = radio_fetch(&fx).expect("last suggestion starts, no more pages → new radio");
+        assert_eq!((seed.as_str(), cont), ("r1", None));
+    }
+
+    #[test]
+    fn queue_running_out_waits_for_radio_then_plays() {
+        let mut s = playing(&["a"]);
+        let seq = s.radio_seq; // in flight since a started
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        assert!(fx.contains(&Effect::Stop));
+        assert_eq!(s.status, Status::Stopped);
+        assert!(s.radio_resume);
+        let fx = reduce(&mut s, Input::Radio { seq, result: page(&["a", "r1"], None) });
+        assert!(matches!(fx.first(), Some(Effect::Resolve { video_id, .. }) if video_id == "r1"));
+        assert_eq!(s.queue.autoplay, 0);
+    }
+
+    #[test]
+    fn autoplay_off_or_repeat_never_fetches() {
+        let mut s = manual(&["a"]);
+        let fx = reduce(&mut s, Input::Player(PlayerEvent::Ended));
+        assert_eq!(radio_fetch(&fx), None);
+        assert_eq!(s.status, Status::Stopped);
+
+        let mut s = PlayerState::default();
+        cmd(&mut s, Command::CycleRepeat);
+        let fx = cmd(&mut s, Command::PlayTracks { tracks: vec![track("a")], start: 0 });
+        assert_eq!(radio_fetch(&fx), None);
+    }
+
+    #[test]
+    fn radio_failure_and_stale_pages() {
+        let mut s = playing(&["a"]);
+        let old = s.radio_seq;
+        let fx = reduce(&mut s, Input::Radio { seq: old, result: Err("HTTP 500".into()) });
+        assert!(matches!(&fx[..], [Effect::Toast(Toast { level: Level::Warn, .. })]));
+        assert!(!s.radio.as_ref().unwrap().loading);
+
+        cmd(&mut s, Command::Radio { track: None });
+        assert!(reduce(&mut s, Input::Radio { seq: old, result: page(&["x"], None) }).is_empty(), "stale page");
+        cmd(&mut s, Command::PlayTracks { tracks: vec![track("b"), track("c")], start: 0 });
+        assert!(s.radio.is_none());
+        assert!(reduce(&mut s, Input::Radio { seq: old + 1, result: page(&["x"], None) }).is_empty(), "radio reset by a new queue");
+        assert_eq!(ids(&s), ["b", "c"]);
+    }
+
+    #[test]
+    fn r_replaces_the_autoplay_section() {
+        let mut s = manual(&["a", "b"]);
+        let fx = cmd(&mut s, Command::Radio { track: None });
+        let (seq, seed, _) = radio_fetch(&fx).unwrap();
+        assert_eq!(seed, "a", "default seed is the current track");
+        assert_eq!(ids(&s), ["a", "b"], "a current seed isn't queued again");
+        reduce(&mut s, Input::Radio { seq, result: page(&["a", "r1", "r2"], None) });
+        assert_eq!(ids(&s), ["a", "b", "r1", "r2"]);
+
+        // R on a search result: it leads the new section; the user's b stays put.
+        let fx = cmd(&mut s, Command::Radio { track: Some(track("z")) });
+        assert_eq!(ids(&s), ["a", "b", "z"]);
+        assert_eq!(s.queue.autoplay, 1);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Resolve { .. })), "busy: nothing interrupted");
+        let (seq, ..) = radio_fetch(&fx).unwrap();
+        reduce(&mut s, Input::Radio { seq, result: page(&["z", "z1"], None) });
+        assert_eq!(ids(&s), ["a", "b", "z", "z1"]);
+        assert_eq!(s.radio.as_ref().unwrap().seed.video_id, "z");
+    }
+
+    #[test]
+    fn r_when_idle_plays_the_seed() {
+        let mut s = PlayerState { autoplay: false, ..PlayerState::default() };
+        let fx = cmd(&mut s, Command::Radio { track: Some(track("z")) });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Resolve { video_id, .. } if video_id == "z")));
+        assert!(radio_fetch(&fx).is_some(), "explicit radio works with autoplay off");
+        assert_eq!(s.queue.current, Some(0));
+        assert_eq!(s.queue.autoplay, 0, "the playing seed is history, not a suggestion");
+        assert!(cmd(&mut PlayerState::default(), Command::Radio { track: None }).iter().any(|e| matches!(e, Effect::Toast(_))));
+    }
+
+    #[test]
+    fn user_tracks_stay_above_suggestions() {
+        let mut s = manual(&["a", "b"]);
+        let seq = radio_fetch(&cmd(&mut s, Command::Radio { track: None })).unwrap().0;
+        reduce(&mut s, Input::Radio { seq, result: page(&["r1", "r2"], None) });
+        cmd(&mut s, Command::Enqueue { tracks: vec![track("u")], next: false });
+        assert_eq!(ids(&s), ["a", "b", "u", "r1", "r2"], "append lands before the autoplay section");
+        cmd(&mut s, Command::Enqueue { tracks: vec![track("n")], next: true });
+        assert_eq!(ids(&s), ["a", "n", "b", "u", "r1", "r2"]);
+        assert_eq!(s.queue.autoplay, 2);
+
+        cmd(&mut s, Command::Move { from: 2, to: 5 });
+        assert_eq!(ids(&s), ["a", "n", "u", "b", "r1", "r2"], "a user track can't sink below the divider");
+        cmd(&mut s, Command::Move { from: 5, to: 1 });
+        assert_eq!(ids(&s), ["a", "r2", "n", "u", "b", "r1"], "a suggestion moved up is adopted");
+        assert_eq!(s.queue.autoplay, 1);
+        cmd(&mut s, Command::Remove { index: 5 });
+        assert_eq!(s.queue.autoplay, 0);
+
+        let mut s = manual(&["a"]);
+        let seq = radio_fetch(&cmd(&mut s, Command::Radio { track: None })).unwrap().0;
+        reduce(&mut s, Input::Radio { seq, result: page(&["r1", "r2", "r3"], None) });
+        cmd(&mut s, Command::Enqueue { tracks: vec![track("u1"), track("u2"), track("u3")], next: false });
+        cmd(&mut s, Command::SetShuffle { on: Some(true) });
+        assert_eq!(&ids(&s)[4..], ["r1", "r2", "r3"], "shuffle leaves suggestions alone");
+        cmd(&mut s, Command::SetShuffle { on: Some(false) });
+        assert_eq!(ids(&s), ["a", "u1", "u2", "u3", "r1", "r2", "r3"]);
+    }
+
+    #[test]
+    fn clear_autoplay_and_toggle() {
+        let mut s = manual(&["a", "b"]);
+        let seq = radio_fetch(&cmd(&mut s, Command::Radio { track: None })).unwrap().0;
+        reduce(&mut s, Input::Radio { seq, result: page(&["r1", "r2"], Some("p2")) });
+        cmd(&mut s, Command::ClearAutoplay);
+        assert_eq!(ids(&s), ["a", "b"]);
+        assert!(s.radio.is_none());
+
+        cmd(&mut s, Command::JumpTo { index: 1 });
+        finish_load(&mut s);
+        let fx = cmd(&mut s, Command::SetAutoplay { on: Some(true) });
+        let (seq, seed, _) = radio_fetch(&fx).expect("turning autoplay on at the last track fetches");
+        assert_eq!(seed, "b");
+        cmd(&mut s, Command::SetAutoplay { on: None });
+        assert!(!s.autoplay);
+        assert!(reduce(&mut s, Input::Radio { seq, result: page(&["r1"], None) }).is_empty(), "page in flight dropped");
+        assert_eq!(ids(&s), ["a", "b"]);
+    }
+
+    #[test]
+    fn queue_state_json_carries_the_divider() {
+        let mut s = manual(&["a"]);
+        let seq = radio_fetch(&cmd(&mut s, Command::Radio { track: None })).unwrap().0;
+        reduce(&mut s, Input::Radio { seq, result: page(&["r1"], Some("secret-token")) });
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["queue"]["autoplay"], 1);
+        assert_eq!(v["radio"]["seed"]["video_id"], "a");
+        assert_eq!(v["autoplay"], false);
+        assert!(!v.to_string().contains("secret-token"), "continuation tokens stay in the daemon");
+        let c: Command = serde_json::from_str(r#"{"cmd":"radio"}"#).unwrap();
+        assert_eq!(c, Command::Radio { track: None });
     }
 
     #[test]

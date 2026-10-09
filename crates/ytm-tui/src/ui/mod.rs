@@ -97,11 +97,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Repeat::One => "↻ one",
     };
     let shuffle_style = Style::new().fg(if app.player.shuffle { t.lagoon } else { t.ink_muted });
+    let autoplay_style = Style::new().fg(if app.player.autoplay { t.lagoon } else { t.ink_muted });
     let account = if app.player.authenticated { "signed in" } else { "anonymous" };
     let right = vec![
         Span::styled(if app.player.shuffle { "⇄ shuffle" } else { "⇄ off" }, shuffle_style),
         Span::raw("  "),
         Span::styled(repeat, Style::new().fg(if app.player.repeat == Repeat::Off { t.ink_muted } else { t.lagoon })),
+        Span::raw("  "),
+        Span::styled(if app.player.autoplay { "∞ autoplay" } else { "∞ off" }, autoplay_style),
         Span::styled("   │   ", Style::new().fg(t.border)),
         Span::styled("◉ ", Style::new().fg(if app.player.authenticated { t.lagoon } else { t.ink_muted })),
         Span::styled(format!("{account} "), Style::new().fg(t.ink_muted)),
@@ -168,7 +171,7 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(Paragraph::new(format!(" {hint}")).fg(t.ink_muted), inner);
                 return;
             }
-            draw_track_table(f, app, inner, &app.results, app.result_cursor, None);
+            draw_track_table(f, app, inner, &app.results, app.result_cursor, None, None);
         }
         View::Queue => {
             let q = &app.player.queue;
@@ -180,7 +183,16 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(Paragraph::new(" queue is empty · search with / and press a to add").fg(t.ink_muted), inner);
                 return;
             }
-            draw_track_table(f, app, inner, &q.items, app.queue_cursor, q.current);
+            // Radio suggestions sit below a divider, so what you chose and what was suggested stay apart.
+            let radio = app.player.radio.as_ref();
+            let divider = (q.autoplay > 0 || radio.is_some_and(|r| r.loading)).then(|| {
+                let label = match radio {
+                    Some(r) => format!("autoplay · radio from {}", r.seed.title),
+                    None => "autoplay".to_string(),
+                };
+                Divider { at: q.autoplay_start(), label, loading: radio.is_some_and(|r| r.loading) }
+            });
+            draw_track_table(f, app, inner, &q.items, app.queue_cursor, q.current, divider.as_ref());
         }
         v => {
             let block = pane(app, Pane::Main, v.label().to_uppercase());
@@ -200,8 +212,23 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// A labelled rule drawn above row `at`; rows from there on are drawn muted.
+struct Divider {
+    at: usize,
+    label: String,
+    loading: bool,
+}
+
 /// `▶ 1 Title  ♥ Artist  5:18` rows with the cursor row highlighted and the list scrolled to keep it visible.
-fn draw_track_table(f: &mut Frame, app: &App, area: Rect, tracks: &[Track], cursor: usize, playing_index: Option<usize>) {
+fn draw_track_table(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    tracks: &[Track],
+    cursor: usize,
+    playing_index: Option<usize>,
+    divider: Option<&Divider>,
+) {
     let t = &app.theme;
     if area.height < 2 {
         return;
@@ -225,10 +252,18 @@ fn draw_track_table(f: &mut Frame, app: &App, area: Rect, tracks: &[Track], curs
 
     let rows_area = Rect { y: area.y + 1, height: area.height - 1, ..area };
     let visible = rows_area.height as usize;
-    let offset = if cursor >= visible { cursor + 1 - visible } else { 0 };
+    let split = divider.map_or(usize::MAX, |d| d.at);
+    // Scroll in screen lines: the divider takes one.
+    let cursor_line = cursor + usize::from(cursor >= split);
+    let offset = if cursor_line >= visible { cursor_line + 1 - visible } else { 0 };
     let current_id = app.player.current_track().map(|t| t.video_id.as_str());
     let mut lines = Vec::new();
-    for (i, tr) in tracks.iter().enumerate().skip(offset).take(visible) {
+    for (i, tr) in tracks.iter().enumerate() {
+        if i == split {
+            if let Some(d) = divider {
+                lines.push(divider_line(app, d, w));
+            }
+        }
         let is_playing = match playing_index {
             Some(p) => p == i,
             None => Some(tr.video_id.as_str()) == current_id,
@@ -241,7 +276,14 @@ fn draw_track_table(f: &mut Frame, app: &App, area: Rect, tracks: &[Track], curs
         } else {
             Span::raw("  ")
         };
-        let mut title_style = Style::new().fg(if is_playing { t.ember } else { t.ink });
+        let suggested = i >= split;
+        let mut title_style = Style::new().fg(if is_playing {
+            t.ember
+        } else if suggested {
+            t.ink_muted
+        } else {
+            t.ink
+        });
         if is_playing {
             title_style = title_style.add_modifier(Modifier::BOLD);
         }
@@ -266,7 +308,27 @@ fn draw_track_table(f: &mut Frame, app: &App, area: Rect, tracks: &[Track], curs
         }
         lines.push(line);
     }
+    if split == tracks.len() {
+        if let Some(d) = divider {
+            lines.push(divider_line(app, d, w)); // radio still loading, nothing below yet
+        }
+    }
+    let lines: Vec<Line> = lines.into_iter().skip(offset).take(visible).collect();
     f.render_widget(Paragraph::new(lines), rows_area);
+}
+
+/// `─ autoplay · radio from X ─────── ↻`, with `finding more…` in amber while a page loads.
+fn divider_line(app: &App, d: &Divider, width: usize) -> Line<'static> {
+    let t = &app.theme;
+    let head = format!("  ─ {} ", d.label);
+    let tail = if d.loading { " ↻ finding more… " } else { " ↻ " };
+    let head = truncate(&head, width.saturating_sub(tail.width() + 2));
+    let fill = "─".repeat(width.saturating_sub(head.width() + tail.width()));
+    Line::from(vec![
+        Span::styled(head, Style::new().fg(t.ink_muted)),
+        Span::styled(fill, Style::new().fg(t.border)),
+        Span::styled(tail, Style::new().fg(if d.loading { t.amber } else { t.ink_muted })),
+    ])
 }
 
 fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -435,6 +497,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ("[ ]", "seek"),
                 ("+/-", "vol"),
                 ("a", "queue"),
+                ("R", "radio"),
                 ("7", "queue view"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -482,9 +545,10 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("n  p", "next / previous"),
         ("[ ]  { }", "seek ±5s / ±30s"),
         ("+ -  M", "volume / mute"),
-        ("s  r", "shuffle / repeat"),
+        ("s  r  X", "shuffle / repeat / autoplay"),
         ("a  A", "add to queue / play next"),
         ("d  J K  c", "queue: remove / move / clear"),
+        ("R  x", "radio from this track / clear suggestions"),
         (".", "show now playing in queue"),
         ("y  Y", "copy URL / video id"),
         ("V  t", "side panel / lyrics ↔ spectrum"),

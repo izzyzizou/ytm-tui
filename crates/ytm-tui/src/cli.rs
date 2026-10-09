@@ -122,6 +122,28 @@ async fn exec(cmd: Cmd, backend: Option<String>) -> Result<(), Fail> {
             say!("repeat {}", serde_json::to_value(s.repeat).unwrap_or_default().as_str().unwrap_or("?"));
             Ok(())
         }
+        Cmd::Radio => {
+            let client = connect().await?;
+            if client.status().await?.current_track().is_none() {
+                return Err(Fail(EXIT_NOT_FOUND, "nothing playing to start radio from".into()));
+            }
+            let s = client.command(Command::Radio { track: None }).await?;
+            if let Some(r) = &s.radio {
+                say!("radio from {} — {}", r.seed.title, r.seed.artist_line());
+            }
+            Ok(())
+        }
+        Cmd::Autoplay { mode } => {
+            let on = match mode.as_deref() {
+                None | Some("toggle") => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(m) => return Err(Fail(EXIT_USAGE, format!("autoplay takes on | off | toggle, not {m}"))),
+            };
+            let s = connect().await?.command(Command::SetAutoplay { on }).await?;
+            say!("autoplay {}", if s.autoplay { "on" } else { "off" });
+            Ok(())
+        }
         Cmd::Queue { action } => match action.unwrap_or(QueueCmd::Ls { json: false }) {
             QueueCmd::Ls { json } => {
                 let s = connect().await?.status().await?;
@@ -131,6 +153,9 @@ async fn exec(cmd: Cmd, backend: Option<String>) -> Result<(), Fail> {
                     say!("queue is empty");
                 } else {
                     for (i, t) in s.queue.items.iter().enumerate() {
+                        if i == s.queue.autoplay_start() {
+                            say!("  ─ autoplay ─");
+                        }
                         let mark = if Some(i) == s.queue.current { "▶" } else { " " };
                         say!("{mark} {:>3}  {} — {}  {}", i + 1, t.title, t.artist_line(), t.duration_s.map(fmt_secs).unwrap_or_default());
                     }
@@ -317,7 +342,9 @@ fn status_json(s: &PlayerState) -> Value {
         "volume": s.volume,
         "shuffle": s.shuffle,
         "repeat": s.repeat,
-        "queue": { "index": s.queue.current, "length": s.queue.items.len() },
+        "queue": { "index": s.queue.current, "length": s.queue.items.len(), "autoplay": s.queue.autoplay },
+        "autoplay": s.autoplay,
+        "radio": s.radio.as_ref().map(|r| json!({ "seed": { "video_id": r.seed.video_id, "title": r.seed.title }, "loading": r.loading })),
         "stream": s.stream.as_ref().map(|st| json!({ "codec": st.codec, "bitrate_kbps": st.bitrate_kbps, "sample_rate": st.sample_rate })),
         "backend": s.backend,
         "authenticated": s.authenticated,

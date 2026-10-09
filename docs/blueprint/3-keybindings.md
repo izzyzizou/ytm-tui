@@ -53,6 +53,7 @@ Vim-flavoured, modal, and fully remappable in `keymap.toml`. Lowercase keys act 
 | `:seek 1:30` | Seek to an absolute time |
 | `s` | Shuffle toggle |
 | `r` | Repeat cycle: off → all → one |
+| `X` | Autoplay on / off (radio when the queue runs out; pairs with `x`, which clears the current suggestions) |
 | `.` | Jump the cursor to the now-playing track |
 | `<` / `>` | Lyrics offset −100 ms / +100 ms (saved per track) |
 
