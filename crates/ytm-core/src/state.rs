@@ -104,6 +104,9 @@ pub struct PlayerState {
     /// Recovery attempts for the current track (expired URL, backend crash).
     #[serde(skip)]
     pub attempts: u8,
+    /// Video id of the upcoming track whose stream was last prefetched.
+    #[serde(skip)]
+    pub prefetched: Option<String>,
 }
 
 impl Default for PlayerState {
@@ -122,6 +125,7 @@ impl Default for PlayerState {
             load_seq: 0,
             pending_start: Duration::ZERO,
             attempts: 0,
+            prefetched: None,
         }
     }
 }

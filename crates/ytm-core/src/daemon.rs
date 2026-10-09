@@ -50,6 +50,8 @@ enum CoreMsg {
     Input(Input),
     Command(Command, oneshot::Sender<PlayerState>),
     Snapshot(oneshot::Sender<PlayerState>),
+    /// A prefetched stream: cache it, don't feed it to the reducer.
+    Prefetched(StreamInfo),
     Shutdown,
 }
 
@@ -198,6 +200,7 @@ impl Core {
                     None | Some(CoreMsg::Shutdown) => break,
                     Some(CoreMsg::Input(i)) => i,
                     Some(CoreMsg::Snapshot(reply)) => { let _ = reply.send(state.clone()); continue; }
+                    Some(CoreMsg::Prefetched(info)) => { self.stream_cache.insert(info.video_id.clone(), info); continue; }
                     Some(CoreMsg::Command(c, reply)) => {
                         self.apply(state, Input::Cmd(c)).await;
                         let _ = reply.send(state.clone());
@@ -232,7 +235,7 @@ impl Core {
         let result = match fx {
             Effect::Resolve { seq, video_id, fresh } => {
                 if !fresh {
-                    if let Some(info) = self.stream_cache.get(&video_id).filter(|i| !i.expires_within(Duration::from_secs(600))) {
+                    if let Some(info) = self.cached(&video_id) {
                         let _ = self.core_tx.send(CoreMsg::Input(Input::Resolved { seq, result: Ok(info.clone()) }));
                         return;
                     }
@@ -244,12 +247,29 @@ impl Core {
                 });
                 Ok(())
             }
+            Effect::Prefetch { video_id } => {
+                if self.cached(&video_id).is_some() {
+                    return;
+                }
+                let (resolver, tx) = (self.resolver.clone(), self.core_tx.clone());
+                tokio::spawn(async move {
+                    match resolver.resolve(&video_id).await {
+                        Ok(info) => {
+                            tracing::debug!("prefetched {video_id}");
+                            let _ = tx.send(CoreMsg::Prefetched(info));
+                        }
+                        Err(e) => tracing::debug!("prefetch {video_id}: {e}"),
+                    }
+                });
+                Ok(())
+            }
             Effect::Load { media, start } => self.backend.load(media, start).await,
             Effect::SetPaused(p) => self.backend.set_paused(p).await,
             Effect::Seek(to) => self.backend.seek(to).await,
             Effect::SetVolume(v) => self.backend.set_volume(v).await,
             Effect::Stop => self.backend.stop().await,
             Effect::RestartBackend => {
+                tracing::warn!("{} backend exited; restarting", self.backend.name());
                 let (b, warn) = make_backend(&self.backend_kind, self.player_tx.clone(), state.volume).await;
                 self.backend = b;
                 state.backend = self.backend.name().into();
@@ -267,6 +287,11 @@ impl Core {
             tracing::warn!("backend: {e}");
             let _ = self.player_tx.send(PlayerEvent::Error(e.to_string()));
         }
+    }
+
+    /// A cached stream that stays valid for at least ten more minutes.
+    fn cached(&self, video_id: &str) -> Option<&StreamInfo> {
+        self.stream_cache.get(video_id).filter(|i| !i.expires_within(Duration::from_secs(600)))
     }
 
     fn toast(&self, level: Level, text: String) {
